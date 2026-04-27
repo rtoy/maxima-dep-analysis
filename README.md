@@ -31,6 +31,18 @@ xref database).
 
 ### xref-based (Common Lisp — require running CMUCL with Maxima loaded)
 
+- **`compile-maxima-with-xref.lisp`** — Build helper.  Sets
+  `c:*record-xref-info*` to T, initializes the xref database, loads
+  `maxima.system`, and compiles Maxima via `mk:compile-system` with
+  xref tracking enabled.  Run this once at the start to produce a
+  CMUCL image whose xref database is populated; the other tools below
+  query that database.
+
+  Usage:
+    (load "compile-maxima-with-xref.lisp")
+    (compile-maxima-with-xref :maxima-src-dir "/path/to/maxima/src/")
+    ;; optional: (save-xref-data "maxima-with-xref.core")
+
 - **`cross-file-deps-cmucl-v7.lisp`** — The main tool.  Loads CMUCL's
   `xref` package, queries `xref::*who-calls*` and friends, attributes
   callees to defining files via debug-info, and reports per-module

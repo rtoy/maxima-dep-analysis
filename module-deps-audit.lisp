@@ -365,8 +365,14 @@ of nodes; only non-trivial SCCs (size > 1, or self-loop) are returned."
                                   (src-dir     "./src/")
                                   (stream      *standard-output*)
                                   (max-examples-per-direction 3))
-  "Detect module-level cycles in the call/macroexpand/etc. graph and
-report each cycle together with example function-level edges."
+  "Detect module-level cycles and report them as:
+
+  (1) A summary of strongly-connected components (SCCs) of size > 1.
+      Every module in an SCC can reach every other through some
+      chain of edges -- that's the maximal tangle.
+
+  (2) Every directly-mutual pair (A and B each have edges to the
+      other), with the most-used callers/callees as examples."
   (let* ((modules (parse-maxima-system system-file))
          (file-to-mod (make-hash-table :test 'equal))
          (src-dir-truename (truename src-dir))
@@ -380,7 +386,6 @@ report each cycle together with example function-level edges."
       (push (sysmod-name m) mod-names)
       (dolist (f (sysmod-files m))
         (setf (gethash f file-to-mod) (sysmod-name m))))
-    ;; Walk every file, classify edges into module pairs.
     (dolist (m modules)
       (dolist (basename (sysmod-files m))
         (let ((fp (probe-file
@@ -397,38 +402,91 @@ report each cycle together with example function-level edges."
                   (push e (gethash (cons caller-mod callee-mod) mod-edges))
                   (pushnew callee-mod (gethash caller-mod succ)
                            :test #'equal))))))))
-    (let ((cycles (strongly-connected-components
-                   (nreverse mod-names) succ)))
+    ;; (1) SCC summary.
+    (let ((sccs (strongly-connected-components
+                 (nreverse mod-names) succ)))
       (cond
-        ((null cycles)
-         (format stream "~%No module-level cycles detected.~%"))
+        ((null sccs)
+         (format stream "~%No strongly-connected components of size > 1.~%"))
         (t
-         (format stream "~%~D module-level cycle~:P:~%" (length cycles))
-         (dolist (scc cycles)
-           (format stream "~%--- cycle: ~{~A~^ <-> ~} ---~%" scc)
-           ;; For every ordered pair within the SCC that has edges,
-           ;; print example function-level edges.
-           (dolist (caller scc)
-             (dolist (callee scc)
-               (unless (equal caller callee)
-                 (let ((edges (gethash (cons caller callee) mod-edges)))
-                   (when edges
-                     (format stream "  ~A -> ~A  (~D edge~:P)~%"
-                             caller callee (length edges))
+         (format stream "~%=== Strongly-connected components ===~%")
+         (format stream "Modules grouped here can reach each other through some~%")
+         (format stream "chain of edges (not necessarily direct).  An SCC of size 1~%")
+         (format stream "is normal; SCCs of size > 1 indicate cycles.~%~%")
+         (dolist (scc (sort (copy-list sccs)
+                            (lambda (a b) (> (length a) (length b)))))
+           (format stream "  size ~D: ~{~A~^ ~}~%" (length scc) scc)))))
+    ;; (2) Mutual pairs.
+    (format stream "~%=== Directly-mutual module pairs ===~%")
+    (let ((pairs '())
+          (seen (make-hash-table :test 'equal)))
+      (maphash
+       (lambda (k v)
+         (declare (ignore v))
+         (let* ((a (car k)) (b (cdr k))
+                (back (gethash (cons b a) mod-edges))
+                (key (sort (list a b) #'string<))
+                (seen-key (format nil "~A|~A" (first key) (second key))))
+           (when (and back (not (gethash seen-key seen)))
+             (setf (gethash seen-key seen) t)
+             (push (list (first key) (second key)) pairs))))
+       mod-edges)
+      (cond
+        ((null pairs)
+         (format stream "(none)~%"))
+        (t
+         ;; Sort pairs by total edge count descending.
+         (setq pairs
+               (sort pairs
+                     (lambda (p1 p2)
+                       (> (+ (length (gethash (cons (first p1) (second p1)) mod-edges))
+                             (length (gethash (cons (second p1) (first p1)) mod-edges)))
+                          (+ (length (gethash (cons (first p2) (second p2)) mod-edges))
+                             (length (gethash (cons (second p2) (first p2)) mod-edges)))))))
+         (format stream "~D mutual pair~:P (sorted by total edge count, descending):~%"
+                 (length pairs))
+         (dolist (p pairs)
+           (let* ((a (first p)) (b (second p))
+                  (a->b (gethash (cons a b) mod-edges))
+                  (b->a (gethash (cons b a) mod-edges)))
+             (format stream "~%~A <-> ~A  (~D + ~D = ~D edges)~%"
+                     a b (length a->b) (length b->a)
+                     (+ (length a->b) (length b->a)))
+             (dolist (dir (list (list a b a->b) (list b a b->a)))
+               (let ((from (first dir))
+                     (to   (second dir))
+                     (es   (third dir)))
+                 (format stream "  ~A -> ~A:~%" from to)
+                 ;; Most-used callers/callees: aggregate by
+                 ;; (caller-name, callee-name) and sort by count.
+                 (let ((agg (make-hash-table :test 'equal)))
+                   (dolist (e es)
+                     (incf (gethash (list (rich-edge-caller-file e)
+                                          (rich-edge-caller-name e)
+                                          (rich-edge-callee-file e)
+                                          (rich-edge-callee-name e)
+                                          (rich-edge-kind e))
+                                    agg 0)))
+                   (let ((rows '()))
+                     (maphash (lambda (k v) (push (cons k v) rows)) agg)
+                     (setq rows (sort rows
+                                      (lambda (x y) (> (cdr x) (cdr y)))))
                      (let ((shown 0))
-                       (dolist (e edges)
+                       (dolist (r rows)
                          (when (< shown max-examples-per-direction)
-                           (format stream
-                                   "    ~A:~A -> ~A:~A  [~A]~%"
-                                   (file-namestring (rich-edge-caller-file e))
-                                   (rich-edge-caller-name e)
-                                   (file-namestring (rich-edge-callee-file e))
-                                   (rich-edge-callee-name e)
-                                   (rich-edge-kind e))
+                           (let ((k (car r)) (n (cdr r)))
+                             (format stream "    ~A:~A -> ~A:~A  [~A]~A~%"
+                                     (file-namestring (first k))
+                                     (second k)
+                                     (file-namestring (third k))
+                                     (fourth k)
+                                     (fifth k)
+                                     (if (> n 1)
+                                         (format nil "  x~D" n)
+                                         "")))
                            (incf shown)))
-                       (when (> (length edges) max-examples-per-direction)
-                         (format stream "    ... (~D more)~%"
-                                 (- (length edges)
-                                    max-examples-per-direction))))))))))))
-      (format stream "~%(End of cycle report)~%"))
+                       (when (> (length rows) max-examples-per-direction)
+                         (format stream "    ... and ~D more distinct caller/callee pair~:P~%"
+                                 (- (length rows) max-examples-per-direction)))))))))))))
+    (format stream "~%(End of cycle report)~%")
     (values)))
