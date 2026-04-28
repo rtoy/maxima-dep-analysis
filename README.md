@@ -89,11 +89,18 @@ xref database).
 ## Limitations
 
 These tools see what xref records: function calls, macroexpansions,
-special-variable refs/binds/sets.  They do NOT see:
+special-variable refs/binds/sets, and (verified) defconstant
+references.  They do NOT see:
 
 - Read-time effects (e.g. `compatibility-macros1` needing
   `float-format` because numeric literals must be read as
   `double-float`).
+- **Deftype references.** xref records defconstant uses but does
+  not record deftype uses.  A file with `(declare (type flonum
+  x))` shows no xref edge to the file defining the `flonum`
+  deftype.  Verified empirically: `(xref:who-references
+  'maxima::flonum)` returns nothing even though `flonum` is used
+  throughout Maxima.
 - Property-list dispatch (`(get sym 'some-prop)` patterns).
 - Init-order dependencies via load-time `setf`-of-property forms
   whose results are consumed by later modules.
@@ -142,3 +149,75 @@ audit's main forward-looking use is as a baseline: if a future change
 introduces an xref-visible dep that isn't declared, MISSING will flag
 it; if a refactor drops a real edge, the corresponding entry will move
 into the no-xref-edges list and warrant investigation before removal.
+
+## Module-level cycles
+
+A run of `report-module-cycles` against the same tree finds one large
+strongly-connected component plus a long list of directly-mutual
+pairs.
+
+### Strongly-connected components
+
+The whole computational core forms a single SCC of 51 modules
+(every module in the SCC can reach every other through some chain
+of edges, not necessarily direct):
+
+  info, utilities, maxima-language-compiler, definite-integration,
+  variable-predicates, simp-utilities, solve, i-o, commands, reader,
+  evaluator, taylor-series, basic-utilities, nformat, rational-functions,
+  simplification, matrix-algebra, translated-packages, graphics-drivers,
+  server, globals, compatibility-macros, float-properties,
+  numeric-bigfloat, defmfun, trigonometry, limits, polynomial,
+  algebraic-database, numerical-utilities, hypergeometric,
+  fundamental-macros, integration, gamma-expint, bessel-functions,
+  miscellaneous, pattern-matching, random, ifactor, factoring,
+  other-macros, gcd, m2-pattern-matcher, display, special-functions,
+  maxima-language-compiler-macros, determinants, debugging,
+  utility-macros, documentation, poisson-series.
+
+This isn't surprising: Maxima's simplifier, evaluator, type-checker,
+and assumption database are mutually recursive by design.
+
+### Directly-mutual pairs
+
+`report-module-cycles` lists 126 mutually-calling module pairs.  The
+heavy hitters reflect intentional core couplings; the lighter pairs
+are sometimes single-function "leaks" worth investigating.  Top
+pairs by total edge count:
+
+| Pair                                          | Edges     |
+|-----------------------------------------------|-----------|
+| factoring <-> rational-functions              | 454 + 26  |
+| simp-utilities <-> trigonometry               |  10 + 425 |
+| miscellaneous <-> simp-utilities              | 423 + 5   |
+| simp-utilities <-> simplification             |  44 + 289 |
+| limits <-> simp-utilities                     | 219 + 1   |
+| algebraic-database <-> simp-utilities         | 153 + 54  |
+| commands <-> simp-utilities                   | 175 + 6   |
+| rational-functions <-> simp-utilities         |  73 + 49  |
+| numeric-bigfloat <-> simplification           | 103 + 10  |
+| algebraic-database <-> miscellaneous          |  12 + 96  |
+| gcd <-> rational-functions                    | 105 + 3   |
+| evaluator <-> utilities                       |  91 + 4   |
+
+(Run `report-module-cycles` for the full list of 126 pairs with
+example caller/callee functions.)
+
+### Notes on the cycle data
+
+- xref's `:binds` and `:sets` edges include defstruct-slot
+  references.  Some pairs that look like "cycles" in the report are
+  actually structural — e.g., many pairs show up only because of
+  `residu.lisp:RES` (a defstruct slot) being bound across files.
+  This is a real xref-recorded edge but doesn't reflect runtime
+  call-flow.
+
+- Light pairs (1-3 edges in one direction) are often candidates for
+  refactoring.  Examples worth a look:
+    factoring -> limits     (1 edge: factor.lisp NIL binds limit::deg)
+    factoring -> matrix-algebra  (1 edge: nalgfa BDISCR calls matrix DET)
+    simplification -> special-functions  (1 edge: FPCATALAN1)
+    display <-> simplification           (1 + 1 edges, bigfloat fmt)
+
+  These could potentially be eliminated by moving small functions
+  to a different module.
