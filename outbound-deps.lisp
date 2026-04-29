@@ -72,20 +72,23 @@ otherwise dominate the output."
         (let* ((callee (first entry))
                (contexts (second entry))
                (callee-file (callee-defining-file callee)))
-          (incf total (length contexts))
-          (cond
-            ((null callee-file)
-             (push (list kind callee (length contexts)) unknown))
-            ((equal callee-file target-path)
-             nil)   ; intra-file, skip
-            ((and src-dir-string
-                  (not (search src-dir-string
-                               (namestring callee-file))))
-             (incf filtered-out (length contexts)))
-            (t
-             (dolist (ctx contexts)
-               (push (list kind callee (xref::xref-context-name ctx))
-                     (gethash callee-file by-callee-file))))))))
+          ;; Skip phantom entries with no contexts -- see comment in
+          ;; module-deps-audit.lisp:FILE-OUTBOUND-EDGES.
+          (when contexts
+            (incf total (length contexts))
+            (cond
+              ((null callee-file)
+               (push (list kind callee (length contexts)) unknown))
+              ((equal callee-file target-path)
+               nil)   ; intra-file, skip
+              ((and src-dir-string
+                    (not (search src-dir-string
+                                 (namestring callee-file))))
+               (incf filtered-out (length contexts)))
+              (t
+               (dolist (ctx contexts)
+                 (push (list kind callee (xref::xref-context-name ctx))
+                       (gethash callee-file by-callee-file)))))))))
     (format t "~%=== OUTBOUND XREF EDGES FROM ~A ===~%"
             (file-namestring target-path))
     (format t "Total: ~D edge~:P across ~D distinct target file~:P~%"

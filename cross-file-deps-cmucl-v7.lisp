@@ -373,9 +373,12 @@ not attribute the edge to the function-defining file."
         (dolist (db-key db-keys)
           (dolist (entry (xref:find-xrefs-for-pathname db-key tn))
             (destructuring-bind (target matches) entry
-              (maybe-record target)
-              (dolist (ctx matches)
-                (maybe-record (xref::xref-context-name ctx))))))))
+              ;; Skip phantom entries with empty contexts -- see comment
+              ;; in module-deps-audit.lisp:FILE-OUTBOUND-EDGES.
+              (when matches
+                (maybe-record target)
+                (dolist (ctx matches)
+                  (maybe-record (xref::xref-context-name ctx)))))))))
     tbl))
 
 (defun xref-edges (truenames kinds resolver)

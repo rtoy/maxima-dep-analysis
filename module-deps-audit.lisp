@@ -152,7 +152,15 @@ under SRC-DIR-STRING."
         (let* ((callee (first entry))
                (contexts (second entry))
                (cf (callee-defining-file callee)))
-          (when (and cf
+          ;; Skip phantom entries: when xref has no real edges from
+          ;; FILE-TRUENAME (e.g. the file was loaded but not compiled
+          ;; with C:*RECORD-XREF-INFO*=T), CMUCL's
+          ;; FIND-XREFS-FOR-PATHNAME nonetheless returns one entry per
+          ;; symbol that has any xref record anywhere, with an empty
+          ;; CONTEXTS list.  An entry with NIL contexts is not a real
+          ;; edge.
+          (when (and contexts
+                     cf
                      (not (equal cf file-truename))
                      (search src-dir-string (namestring cf)))
             (incf (gethash cf tab 0) (length contexts))))))
@@ -308,7 +316,9 @@ function Y in file B' for cycle explanation."
         (let* ((callee (first entry))
                (contexts (second entry))
                (cf (callee-defining-file callee)))
-          (when (and cf
+          ;; Skip phantom entries with no contexts.
+          (when (and contexts
+                     cf
                      (not (equal cf file-truename))
                      (search src-dir-string (namestring cf)))
             (dolist (ctx contexts)
